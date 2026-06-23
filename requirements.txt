@@ -1,0 +1,15 @@
+# レガシー業界向け 非構造化ドキュメント抽出ツール
+# Python 3.10+ を想定
+
+# データ整形・表示用
+pandas>=2.0.0
+
+# スキーマ定義 / バリデーション（本ツールの中核）
+pydantic>=2.6.0
+
+# LLM 経由の構造化抽出（Anthropic SDK / 非同期クライアント AsyncAnthropic を使用）
+# ※ APIキーは環境変数 ANTHROPIC_API_KEY から読み込みます
+anthropic>=0.49.0
+
+# レートリミット回避用の指数バックオフ付きリトライ
+tenacity>=8.2.0
