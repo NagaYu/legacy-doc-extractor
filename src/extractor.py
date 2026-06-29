@@ -35,10 +35,10 @@ class DocumentType(str, Enum):
 class MonetaryItem(BaseModel):
     """A normalized monetary item. Absorbs notation variance into an integer amount in yen."""
 
-    label: str = Field(..., description="金額の名目（例: 月額家賃, 敷金, 保険金額, 保険料）")
-    amount_yen: int = Field(..., description="円単位に正規化した金額（整数）。例: 12万円→120000")
+    label: str = Field(..., description="The kind of amount, in Japanese as written (e.g. 月額家賃, 敷金, 保険金額, 保険料)")
+    amount_yen: int = Field(..., description="Amount normalized to an integer in yen. e.g. 12万円 -> 120000")
     original_text: str = Field(
-        ..., description="元テキストでの表記（例: '金弐拾肆萬円', '35万円', '120,000円'）"
+        ..., description="The notation in the source text (e.g. '金弐拾肆萬円', '35万円', '120,000円')"
     )
 
 
@@ -46,27 +46,27 @@ class ContractData(BaseModel):
     """Final schema of structured data extracted from a contract/policy."""
 
     document_type: DocumentType = Field(
-        ..., description="ドキュメント種別。不動産=real_estate, 保険=insurance"
+        ..., description="Document type. real estate=real_estate, insurance=insurance"
     )
     contractor_name: str = Field(
-        ..., description="契約者（借主・保険契約者）の氏名または名称"
+        ..., description="Name of the contractor (lessee / policyholder), in Japanese as written"
     )
     counterparty_name: Optional[str] = Field(
-        None, description="相手方（貸主・保険会社）の名称。不明な場合は null"
+        None, description="Name of the counterparty (lessor / insurer). null if unknown"
     )
     contract_date: Optional[date] = Field(
         None,
-        description="契約日/契約始期。和暦・西暦の混在を吸収しISO形式(YYYY-MM-DD)に正規化する。不明なら null",
+        description="Contract date / start date. Absorb mixed Japanese-era and Gregorian dates and normalize to ISO (YYYY-MM-DD). null if unknown",
     )
     monetary_amounts: list[MonetaryItem] = Field(
         default_factory=list,
-        description="契約に関わる金額一覧。円・万円・漢数字の表記揺れを円単位に正規化する",
+        description="List of amounts in the contract. Normalize 円/万円/kanji-numeral notation variance to an integer in yen",
     )
     key_clauses: list[str] = Field(
         default_factory=list,
-        description="重要な特約・免責事項を1項目1文で簡潔に要約したもの",
+        description="Important special terms / disclaimers, each summarized in one short sentence",
     )
-    summary: str = Field(..., description="契約全体の1〜2文の要約")
+    summary: str = Field(..., description="1-2 sentence summary of the whole contract")
 
 
 # ===========================================================================
@@ -75,27 +75,28 @@ class ContractData(BaseModel):
 MODEL_ID = "claude-opus-4-8"
 
 SYSTEM_PROMPT = """\
-あなたは保険・不動産業界のレガシーな契約書・約款を読み解く専門のデータ抽出エンジンです。
-表記が不統一で冗長な日本語テキストから、指定スキーマに厳密に従って情報を抽出してください。
+You are a specialized data-extraction engine for legacy insurance and real-estate contracts and policies.
+The source text is Japanese, with inconsistent notation and verbose boilerplate. Extract information strictly
+following the given schema. Keep extracted names and labels in their original Japanese as written.
 
-レガジー文書ゆえの「表記揺れ」を必ず正規化してください:
+Always normalize the notation variance typical of legacy documents:
 
-【金額の正規化】amount_yen は必ず「円単位の整数」にすること。
-  - "120,000円" → 120000
-  - "12万円" / "金壱拾弐萬円" → 120000
-  - "35万円" → 350000
-  - "金壱千万円" / "10,000,000円" → 10000000
-  - 漢数字（壱弐参…萬…）やカンマ・全角数字も解釈して算用数字に直すこと。
-  - original_text には元の表記をそのまま残すこと。
+[Amount normalization] amount_yen must always be an integer in yen.
+  - "120,000円" -> 120000
+  - "12万円" / "金壱拾弐萬円" -> 120000
+  - "35万円" -> 350000
+  - "金壱千万円" / "10,000,000円" -> 10000000
+  - Interpret kanji numerals (壱弐参…萬…), commas, and full-width digits, and convert them to arabic numbers.
+  - Keep the original notation verbatim in original_text.
 
-【日付の正規化】contract_date は ISO形式(YYYY-MM-DD)にすること。
-  - 和暦は西暦へ変換する。令和N年 = (2018+N)年。例: 令和6年4月1日 → 2024-04-01
-  - 平成N年 = (1988+N)年。
-  - 「契約日」「契約始期」に相当する日付を採用すること。
+[Date normalization] contract_date must be in ISO format (YYYY-MM-DD).
+  - Convert Japanese eras to the Gregorian calendar. 令和N年 = (2018+N). e.g. 令和6年4月1日 -> 2024-04-01
+  - 平成N年 = (1988+N).
+  - Use the date corresponding to the contract date / contract start.
 
-【特約・免責】key_clauses には重要な特約事項・免責事項を、それぞれ簡潔な1文に要約して列挙すること。
+[Special terms / disclaimers] In key_clauses, list the important special terms and disclaimers, each summarized in one short sentence.
 
-不明な項目は無理に埋めず、任意項目は null / 空配列にしてください。
+Do not force-fill unknown fields; set optional fields to null / empty arrays.
 """
 
 
@@ -112,14 +113,14 @@ def extract_with_llm(text: str) -> ContractData:
         messages=[
             {
                 "role": "user",
-                "content": f"以下の契約書テキストから情報を抽出してください。\n\n---\n{text}\n---",
+                "content": f"Extract information from the following contract text.\n\n---\n{text}\n---",
             }
         ],
         output_format=ContractData,
     )
     parsed = response.parsed_output
     if parsed is None:
-        raise ValueError("LLMがスキーマに準拠した出力を返しませんでした。")
+        raise ValueError("The LLM did not return output conforming to the schema.")
     return parsed
 
 
@@ -311,12 +312,12 @@ def extract_with_fallback(text: str) -> ContractData:
 
     return ContractData(
         document_type=doc_type,
-        contractor_name=contractor or "（抽出失敗）",
+        contractor_name=contractor or "(extraction failed)",
         counterparty_name=counterparty,
         contract_date=_extract_date_fallback(text),
         monetary_amounts=_extract_amounts_fallback(text),
         key_clauses=_extract_clauses_fallback(text),
-        summary=f"{doc_type.value} 区分の契約書から規則ベースで抽出した構造化データ。",
+        summary=f"Structured data extracted by rules from a {doc_type.value} contract.",
     )
 
 
@@ -333,5 +334,5 @@ def extract_contract(text: str) -> tuple[ContractData, str]:
         try:
             return extract_with_llm(text), "LLM (Anthropic Structured Outputs)"
         except Exception as exc:  # noqa: BLE001 - fall back instead
-            print(f"  [warn] LLM抽出に失敗したためフォールバックします: {exc}")
-    return extract_with_fallback(text), "規則ベース (正規表現フォールバック)"
+            print(f"  [warn] LLM extraction failed; falling back: {exc}")
+    return extract_with_fallback(text), "Rule-based (regex fallback)"

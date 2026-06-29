@@ -28,7 +28,7 @@ SEP = "═" * 78
 
 
 def _print_source(text: str) -> None:
-    print("📄 元テキスト（非構造化）")
+    print("📄 Source text (unstructured)")
     print("-" * 78)
     for line in text.rstrip().splitlines():
         print(f"  {line}")
@@ -36,7 +36,7 @@ def _print_source(text: str) -> None:
 
 
 def _print_structured(data: ContractData) -> None:
-    print("✅ 抽出・構造化されたデータ（バリデーション済み JSON）")
+    print("✅ Extracted & structured data (validated JSON)")
     print("-" * 78)
     # Pydantic v2: render ISO dates etc. into JSON-compatible form, then pretty-print
     rendered = json.dumps(data.model_dump(mode="json"), ensure_ascii=False, indent=2)
@@ -48,8 +48,8 @@ def _print_structured(data: ContractData) -> None:
 def main() -> int:
     samples = sorted(DATA_DIR.glob("sample_contract_*.txt"))
     if not samples:
-        print(f"[error] テストデータが見つかりません: {DATA_DIR}")
-        print("        先に `python data/generate_data.py` を実行してください。")
+        print(f"[error] No test data found: {DATA_DIR}")
+        print("        Run `python data/generate_data.py` first.")
         return 1
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -72,17 +72,17 @@ def main() -> int:
             validated = ContractData.model_validate(data.model_dump())
         except ValidationError as exc:
             failed += 1
-            print(f"❌ バリデーション失敗: {exc}")
+            print(f"❌ Validation failed: {exc}")
             print()
             continue
         except Exception as exc:  # noqa: BLE001
             failed += 1
-            print(f"❌ 抽出処理でエラー: {exc}")
+            print(f"❌ Error during extraction: {exc}")
             print()
             continue
 
         success += 1
-        print(f"🔧 抽出方式: {method}")
+        print(f"🔧 Extraction method: {method}")
         print()
         _print_structured(validated)
 
@@ -100,12 +100,12 @@ def main() -> int:
     )
 
     print(SEP)
-    print("📊 サマリー")
+    print("📊 Summary")
     print(SEP)
-    print(f"  対象ファイル数 : {len(samples)}")
-    print(f"  成功（検証通過）: {success}")
-    print(f"  失敗           : {failed}")
-    print(f"  保存先         : {out_path}")
+    print(f"  Files processed   : {len(samples)}")
+    print(f"  Succeeded (valid) : {success}")
+    print(f"  Failed            : {failed}")
+    print(f"  Saved to          : {out_path}")
     print()
 
     return 0 if failed == 0 else 2

@@ -43,13 +43,13 @@ async def main() -> int:
 
     samples = sorted(DATA_DIR.glob("sample_contract_*.txt"))
     if not samples:
-        print(f"[error] テストデータがありません: {DATA_DIR} （先に data/generate_data.py を実行）")
+        print(f"[error] No test data found: {DATA_DIR} (run data/generate_data.py first)")
         return 1
 
     docs = [(p.name, p.read_text(encoding="utf-8")) for p in samples]
 
     print(SEP)
-    print(f"🚀 非同期バッチ抽出を開始（{len(docs)} 件 / 最大並列数あり）")
+    print(f"🚀 Starting async batch extraction ({len(docs)} docs / bounded concurrency)")
     print(SEP)
 
     t0 = time.perf_counter()
@@ -96,34 +96,34 @@ async def main() -> int:
         print(f"📄 {r.name}")
         if r.ok:
             d = r.data
-            print(f"   状態        : ✅ 検証通過（試行 {r.attempts} 回 / 自己修正 {r.corrections} 回）")
-            print(f"   契約者      : {d.contractor_name.value!r}  (conf={d.contractor_name.confidence:.2f})")
-            print(f"   相手方      : {d.counterparty_name.value!r}  (conf={d.counterparty_name.confidence:.2f})")
+            print(f"   status       : ✅ validated (attempts {r.attempts} / self-corrections {r.corrections})")
+            print(f"   contractor   : {d.contractor_name.value!r}  (conf={d.contractor_name.confidence:.2f})")
+            print(f"   counterparty : {d.counterparty_name.value!r}  (conf={d.counterparty_name.confidence:.2f})")
             dv = d.contract_date.value.isoformat() if d.contract_date.value else None
-            print(f"   契約日(ISO) : {dv}  (conf={d.contract_date.confidence:.2f})")
+            print(f"   date (ISO)   : {dv}  (conf={d.contract_date.confidence:.2f})")
             for m in d.monetary_amounts:
-                print(f"     ・{m.label}: {m.amount_yen:,}円  (conf={m.confidence:.2f}, 原文='{m.quote}')")
+                print(f"     - {m.label}: {m.amount_yen:,} yen  (conf={m.confidence:.2f}, source='{m.quote}')")
             if r.flagged:
                 fl = ", ".join(f"{f}({c:.2f})" for f, c in r.flagged)
-                print(f"   ⚠ 要人手確認: {fl}")
+                print(f"   ⚠ needs human review: {fl}")
         else:
-            print(f"   状態        : ❌ 失敗 — {r.error}")
+            print(f"   status       : ❌ failed — {r.error}")
 
     # Summary
     rate = (success / len(results) * 100) if results else 0.0
     print()
     print(SEP)
-    print("📊 バッチ処理サマリー")
+    print("📊 Batch processing summary")
     print(SEP)
-    print(f"  使用クライアント   : {client_name}")
-    print(f"  処理件数           : {len(results)}")
-    print(f"  パース成功率       : {success}/{len(results)}  ({rate:.0f}%)")
-    print(f"  処理時間           : {elapsed:.2f} 秒  (1件あたり {elapsed/len(results):.2f} 秒)")
-    print(f"  トークン消費量     : 合計 {total_usage.total:,}  "
-          f"(入力 {total_usage.input_tokens:,} / 出力 {total_usage.output_tokens:,})")
-    print(f"  自己修正の総回数   : {total_corrections}")
-    print(f"  要人手確認フラグ数 : {total_flags}  (確信度 < {CONFIDENCE_THRESHOLD})")
-    print(f"  保存先             : {out_path}")
+    print(f"  Client used        : {client_name}")
+    print(f"  Documents          : {len(results)}")
+    print(f"  Parse success rate : {success}/{len(results)}  ({rate:.0f}%)")
+    print(f"  Processing time    : {elapsed:.2f} s  ({elapsed/len(results):.2f} s/doc)")
+    print(f"  Token consumption  : total {total_usage.total:,}  "
+          f"(input {total_usage.input_tokens:,} / output {total_usage.output_tokens:,})")
+    print(f"  Self-corrections   : {total_corrections}")
+    print(f"  Human-review flags : {total_flags}  (confidence < {CONFIDENCE_THRESHOLD})")
+    print(f"  Saved to           : {out_path}")
     print()
 
     return 0 if success == len(results) else 2

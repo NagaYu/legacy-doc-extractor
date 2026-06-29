@@ -74,14 +74,14 @@ class DocumentType(str, Enum):
 class Tracked(BaseModel, Generic[T]):
     """Extraction result for one field. Tracks the value, supporting quote, and confidence together."""
 
-    value: Optional[T] = Field(None, description="抽出・正規化した値")
-    quote: str = Field("", description="根拠となった原文の最小引用")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="確信度 0.0-1.0")
+    value: Optional[T] = Field(None, description="Extracted / normalized value")
+    quote: str = Field("", description="Minimal supporting quote from the source text")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence 0.0-1.0")
 
 
 class MonetaryItem(BaseModel):
     label: str
-    amount_yen: int = Field(..., description="円単位の整数に正規化した金額")
+    amount_yen: int = Field(..., description="Amount normalized to an integer in yen")
     quote: str = ""
     confidence: float = Field(..., ge=0.0, le=1.0)
 
@@ -91,13 +91,13 @@ class MonetaryItem(BaseModel):
         # If the LLM returns a string like "120,000円" or "12万円", reject it to trigger self-correction
         if isinstance(v, str):
             raise ValueError(
-                f"amount_yen は円単位の整数で返してください。'{v}' は未正規化の文字列です"
+                f"amount_yen must be an integer in yen; '{v}' is an un-normalized string"
             )
         if isinstance(v, float) and not v.is_integer():
-            raise ValueError(f"amount_yen は整数で返してください（受領: {v}）")
+            raise ValueError(f"amount_yen must be an integer (received: {v})")
         iv = int(v)
         if iv < 0:
-            raise ValueError("amount_yen は 0 以上である必要があります")
+            raise ValueError("amount_yen must be >= 0")
         return iv
 
 
@@ -119,8 +119,8 @@ class ContractData(BaseModel):
         # Here we additionally check it falls in a plausible range (catches un-converted Japanese eras, etc.).
         if v.value is not None and not (1900 <= v.value.year <= 2100):
             raise ValueError(
-                f"contract_date.value={v.value} が妥当な範囲(1900-2100)外です。"
-                "和暦→西暦変換とISO形式(YYYY-MM-DD)を確認してください"
+                f"contract_date.value={v.value} is outside the plausible range (1900-2100). "
+                "Check the Japanese-era to Gregorian conversion and ISO format (YYYY-MM-DD)"
             )
         return v
 
@@ -141,12 +141,13 @@ class ContractData(BaseModel):
 # 2. Compressed prompt + compact few-shot (optimized for token efficiency)
 # ===========================================================================
 SYSTEM_PROMPT = (
-    "保険/不動産の契約書からJSONのみ抽出。各値に value/quote/confidence(0-1) を付与。"
-    "quoteは根拠原文の最小引用。"
-    "正規化: 金額=円整数(12万円→120000,漢数字も), 日付=ISO(令和N年→(2018+N)年,YYYY-MM-DD)。"
-    "monetary_amounts[]は{label,amount_yen(円整数),quote,confidence}。"
-    "document_type=real_estate|insurance|unknown。不明はvalue:null/confidence低。"
-    "説明やコードフェンス禁止、JSONのみ返す。"
+    "Extract JSON only from Japanese insurance/real-estate contracts. "
+    "Give each value value/quote/confidence(0-1). quote = minimal supporting source quote. "
+    "Normalize: amount = integer yen (12万円->120000, incl. kanji numerals), "
+    "date = ISO (令和N年->(2018+N), YYYY-MM-DD). "
+    "monetary_amounts[] = {label,amount_yen(int yen),quote,confidence}. "
+    "document_type=real_estate|insurance|unknown. Unknown = value:null / low confidence. "
+    "Keep extracted names/labels in their original Japanese. No prose or code fences; return JSON only."
 )
 
 # The few-shot is a single minimal JSON example (one user→assistant round trip) to save tokens
@@ -172,7 +173,7 @@ FEWSHOT_MESSAGES = [
     {"role": "assistant", "content": _FEWSHOT_OUTPUT},
 ]
 
-CORRECTION_MARKER = "【自己修正要求】"
+CORRECTION_MARKER = "[SELF-CORRECTION REQUEST]"
 
 
 def _estimate_tokens(text: str) -> int:
@@ -333,10 +334,10 @@ def _date_quote(text: str) -> str:
 
 def _make_client():
     if os.environ.get("ANTHROPIC_API_KEY"):
-        logger.info("ANTHROPIC_API_KEY を検出 → 実LLM (AsyncAnthropic) を使用")
+        logger.info("Detected ANTHROPIC_API_KEY -> using real LLM (AsyncAnthropic)")
         return RealAsyncLLM(), "LLM (AsyncAnthropic Structured Extraction)"
-    logger.info("ANTHROPIC_API_KEY 未設定 → 決定論的モックLLMを使用")
-    return MockAsyncLLM(), "MockLLM (deterministic, key不要)"
+    logger.info("ANTHROPIC_API_KEY not set -> using deterministic mock LLM")
+    return MockAsyncLLM(), "MockLLM (deterministic, no key required)"
 
 
 # ===========================================================================
@@ -371,7 +372,7 @@ async def _invoke_with_backoff(client, messages: list[dict]) -> tuple[str, Usage
 
 
 def _format_validation_feedback(err: ValidationError, raw: str) -> str:
-    lines = [f"{CORRECTION_MARKER} 前回のJSONは検証に失敗しました。以下を修正し、JSONのみ再出力してください:"]
+    lines = [f"{CORRECTION_MARKER} The previous JSON failed validation. Fix the following and return JSON only:"]
     for e in err.errors():
         loc = ".".join(str(p) for p in e["loc"])
         lines.append(f"- {loc}: {e['msg']}")
@@ -408,7 +409,7 @@ async def extract_one(client, name: str, text: str) -> ExtractionResult:
             last_err = exc
             if attempt < MAX_SELF_CORRECTIONS:
                 logger.info(
-                    "[%s] 検証失敗(試行%d/%d) → 自己修正を要求: %s",
+                    "[%s] validation failed (attempt %d/%d) -> requesting self-correction: %s",
                     name, attempt + 1, 1 + MAX_SELF_CORRECTIONS,
                     "; ".join(e["msg"] for e in exc.errors()),
                 )
@@ -421,7 +422,7 @@ async def extract_one(client, name: str, text: str) -> ExtractionResult:
         flagged = data.low_confidence_fields()
         for field_name, conf in flagged:
             logger.warning(
-                "[%s] 低確信度のため要人手確認: %s (confidence=%.2f < %.2f)",
+                "[%s] low confidence, needs human review: %s (confidence=%.2f < %.2f)",
                 name, field_name, conf, CONFIDENCE_THRESHOLD,
             )
         return ExtractionResult(
@@ -432,7 +433,7 @@ async def extract_one(client, name: str, text: str) -> ExtractionResult:
     return ExtractionResult(
         name=name, data=None, usage=usage,
         attempts=1 + MAX_SELF_CORRECTIONS, corrections=MAX_SELF_CORRECTIONS,
-        error=f"自己修正上限({MAX_SELF_CORRECTIONS}回)を超過: "
+        error=f"Exceeded self-correction limit ({MAX_SELF_CORRECTIONS}): "
               + ("; ".join(e["msg"] for e in last_err.errors()) if last_err else "unknown"),
     )
 
