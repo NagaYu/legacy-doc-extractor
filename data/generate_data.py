@@ -1,25 +1,25 @@
 """
-レガシー業界（保険・不動産）向けの架空の非構造化ドキュメントを生成するスクリプト。
+Script that generates fictional unstructured documents for legacy industries (insurance / real estate).
 
-わざと以下の「レガシーあるある」を盛り込んでいる:
-  - 金額の表記揺れ（120,000円 / 12万円 / 金壱拾弐萬円 など）
-  - 和暦と西暦の混在（令和6年 / 2024年）
-  - 不要な前置き・定型文・改行のばらつき
-  - 全角/半角の混在
+It deliberately bakes in the usual "legacy" quirks:
+  - inconsistent amount notation (120,000円 / 12万円 / 金壱拾弐萬円, etc.)
+  - mixed Japanese-era and Gregorian dates (令和6年 / 2024年)
+  - unnecessary preambles, boilerplate, and inconsistent line breaks
+  - mixed full-width / half-width characters
 
-実行すると data/ 配下に sample_contract_1〜3.txt を出力する。
+Running it writes sample_contract_1〜3.txt under data/.
 """
 
 from __future__ import annotations
 
 import pathlib
 
-# このスクリプトが置かれているディレクトリ（= data/）
+# The directory this script lives in (= data/)
 DATA_DIR = pathlib.Path(__file__).resolve().parent
 
 
 # ---------------------------------------------------------------------------
-# 1) 不動産賃貸借契約書（表記揺れ多め）
+# 1) Real estate lease agreement (lots of notation variance)
 # ---------------------------------------------------------------------------
 CONTRACT_1 = """\
 　　　　　　　　建物賃貸借契約書（写）
@@ -51,7 +51,7 @@ CONTRACT_1 = """\
 
 
 # ---------------------------------------------------------------------------
-# 2) 生命保険 契約内容のお知らせ（約款抜粋・冗長な定型文あり）
+# 2) Life insurance contract notice (policy excerpt, with verbose boilerplate)
 # ---------------------------------------------------------------------------
 CONTRACT_2 = """\
 ご契約内容のお知らせ　兼　約款抜粋
@@ -78,7 +78,7 @@ CONTRACT_2 = """\
 
 
 # ---------------------------------------------------------------------------
-# 3) 事業用テナント賃貸契約（万円表記・和暦のみ・改行少なめ）
+# 3) Commercial tenant lease (万円 notation, Japanese-era only, few line breaks)
 # ---------------------------------------------------------------------------
 CONTRACT_3 = """\
 事業用建物賃貸借に関する覚書

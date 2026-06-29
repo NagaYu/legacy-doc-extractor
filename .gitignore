@@ -4,23 +4,23 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# 仮想環境
+# Virtual environments
 .venv/
 venv/
 env/
 
-# 環境変数・シークレット（APIキーを誤コミットしない）
+# Environment variables / secrets (avoid committing API keys)
 .env
 .env.*
 *.key
 
-# 抽出結果（実データを含む可能性があるため除外）
+# Extraction results (excluded as they may contain real data)
 output/
 
-# OS / エディタ
+# OS / editor
 .DS_Store
 .idea/
 .vscode/
 
-# ローカルのツール設定（公開不要）
+# Local tooling config (not for publishing)
 .claude/settings.local.json

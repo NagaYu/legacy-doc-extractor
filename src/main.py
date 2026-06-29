@@ -1,10 +1,10 @@
 """
-デモ実行スクリプト。
+Demo runner script.
 
-  1. data/ 配下の sample_contract_*.txt を読み込む
-  2. extractor.extract_contract() で構造化データを抽出
-  3. Pydantic によるバリデーションを通過したものを output/extracted_data.json に保存
-  4. 「元テキスト」と「構造化JSON」をコンソールに並べて表示
+  1. Load sample_contract_*.txt under data/
+  2. Extract structured data with extractor.extract_contract()
+  3. Save whatever passes Pydantic validation to output/extracted_data.json
+  4. Print the "source text" and "structured JSON" side by side in the console
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import json
 import pathlib
 import sys
 
-# src/ を import パスに追加
+# Add src/ to the import path
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from pydantic import ValidationError  # noqa: E402
@@ -38,7 +38,7 @@ def _print_source(text: str) -> None:
 def _print_structured(data: ContractData) -> None:
     print("✅ 抽出・構造化されたデータ（バリデーション済み JSON）")
     print("-" * 78)
-    # Pydantic v2: ISO日付などを JSON 互換へ整形して整形出力
+    # Pydantic v2: render ISO dates etc. into JSON-compatible form, then pretty-print
     rendered = json.dumps(data.model_dump(mode="json"), ensure_ascii=False, indent=2)
     for line in rendered.splitlines():
         print(f"  {line}")
@@ -68,7 +68,7 @@ def main() -> int:
 
         try:
             data, method = extract_contract(text)
-            # ここで再バリデーション（型・必須項目チェックを明示的に保証）
+            # Re-validate here (explicitly guarantee type / required-field checks)
             validated = ContractData.model_validate(data.model_dump())
         except ValidationError as exc:
             failed += 1
@@ -92,7 +92,7 @@ def main() -> int:
             "data": validated.model_dump(mode="json"),
         })
 
-    # 結果の保存
+    # Save results
     out_path = OUTPUT_DIR / "extracted_data.json"
     out_path.write_text(
         json.dumps(results, ensure_ascii=False, indent=2),

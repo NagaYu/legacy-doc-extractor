@@ -1,13 +1,13 @@
 """
-非構造化な契約書/約款テキストから、Pydanticモデルに準拠した構造化データを抽出する。
+Extract structured data conforming to a Pydantic model from unstructured contract/policy text.
 
-抽出方式は2系統:
-  1. LLM抽出 (extract_with_llm) … Anthropic の Structured Outputs を使用。
-     環境変数 ANTHROPIC_API_KEY が設定されている場合に利用される。高精度。
-  2. 規則ベース抽出 (extract_with_fallback) … 正規表現による決定論的フォールバック。
-     APIキーが無い／API呼び出しに失敗した場合でもデモがエンドツーエンドで動くようにする。
+Two extraction methods:
+  1. LLM extraction (extract_with_llm) ... Uses Anthropic Structured Outputs.
+     Used when the ANTHROPIC_API_KEY environment variable is set. High accuracy.
+  2. Rule-based extraction (extract_with_fallback) ... Deterministic regex fallback.
+     Keeps the demo working end to end even without an API key or when an API call fails.
 
-呼び出し側は extract_contract() を使えば、利用可能な方式が自動で選択される。
+Callers can use extract_contract(), which automatically selects an available method.
 """
 
 from __future__ import annotations
@@ -22,18 +22,18 @@ from pydantic import BaseModel, Field
 
 
 # ===========================================================================
-# 1. Pydantic スキーマ定義
+# 1. Pydantic schema definitions
 # ===========================================================================
 class DocumentType(str, Enum):
-    """ドキュメント種別。"""
+    """Document type."""
 
-    REAL_ESTATE = "real_estate"   # 不動産（賃貸借契約など）
-    INSURANCE = "insurance"       # 保険（約款・契約内容）
+    REAL_ESTATE = "real_estate"   # real estate (e.g. lease agreements)
+    INSURANCE = "insurance"       # insurance (policies / contract details)
     UNKNOWN = "unknown"
 
 
 class MonetaryItem(BaseModel):
-    """正規化された金額項目。表記揺れを吸収して円単位の整数に統一する。"""
+    """A normalized monetary item. Absorbs notation variance into an integer amount in yen."""
 
     label: str = Field(..., description="金額の名目（例: 月額家賃, 敷金, 保険金額, 保険料）")
     amount_yen: int = Field(..., description="円単位に正規化した金額（整数）。例: 12万円→120000")
@@ -43,7 +43,7 @@ class MonetaryItem(BaseModel):
 
 
 class ContractData(BaseModel):
-    """契約書/約款から抽出する構造化データの最終スキーマ。"""
+    """Final schema of structured data extracted from a contract/policy."""
 
     document_type: DocumentType = Field(
         ..., description="ドキュメント種別。不動産=real_estate, 保険=insurance"
@@ -70,7 +70,7 @@ class ContractData(BaseModel):
 
 
 # ===========================================================================
-# 2. LLM抽出（Anthropic Structured Outputs）
+# 2. LLM extraction (Anthropic Structured Outputs)
 # ===========================================================================
 MODEL_ID = "claude-opus-4-8"
 
@@ -100,10 +100,10 @@ SYSTEM_PROMPT = """\
 
 
 def extract_with_llm(text: str) -> ContractData:
-    """Anthropic の Structured Outputs を用いて構造化抽出する。"""
-    import anthropic  # 遅延 import（フォールバック時に依存を強制しない）
+    """Run structured extraction using Anthropic Structured Outputs."""
+    import anthropic  # lazy import (don't force the dependency on the fallback path)
 
-    client = anthropic.Anthropic()  # ANTHROPIC_API_KEY を環境変数から読み込む
+    client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the environment
 
     response = client.messages.parse(
         model=MODEL_ID,
@@ -124,7 +124,7 @@ def extract_with_llm(text: str) -> ContractData:
 
 
 # ===========================================================================
-# 3. 規則ベース抽出（決定論的フォールバック）
+# 3. Rule-based extraction (deterministic fallback)
 # ===========================================================================
 _KANJI_DIGIT = {
     "〇": 0, "零": 0, "一": 1, "壱": 1, "二": 2, "弐": 2, "三": 3, "参": 3,
@@ -135,7 +135,7 @@ _KANJI_UNIT_LARGE = {"万": 10_000, "萬": 10_000, "億": 100_000_000}
 
 
 def _zen_to_han(s: str) -> str:
-    """全角英数字・カンマを半角へ変換する。"""
+    """Convert full-width digits and commas to half-width."""
     return s.translate(str.maketrans(
         "０１２３４５６７８９，．",
         "0123456789,.",
@@ -143,15 +143,15 @@ def _zen_to_han(s: str) -> str:
 
 
 def parse_kanji_number(s: str) -> Optional[int]:
-    """漢数字（壱千万円 等）を整数に変換する。失敗時は None。"""
+    """Convert a kanji numeral (e.g. 壱千万円) to an integer. Returns None on failure."""
     s = s.replace("金", "").replace("也", "").replace("円", "")
     s = s.replace("圓", "").strip()
     if not s:
         return None
 
-    total = 0          # 確定済みの合計
-    section = 0        # 「万」「億」までの区間値
-    current = 0        # 直近の桁の値
+    total = 0          # accumulated total
+    section = 0        # section value up to 「万」「億」
+    current = 0        # value of the most recent digit
     matched = False
 
     for ch in s:
@@ -169,7 +169,7 @@ def parse_kanji_number(s: str) -> Optional[int]:
             current = 0
             matched = True
         else:
-            # 想定外の文字が混ざる場合は漢数字ではないと判断
+            # an unexpected character means this is not a kanji numeral
             return None
 
     result = total + section + current
@@ -177,26 +177,26 @@ def parse_kanji_number(s: str) -> Optional[int]:
 
 
 def normalize_amount(raw: str) -> Optional[int]:
-    """金額表記（120,000円 / 12万円 / 金壱千万円 など）を円単位の整数へ正規化する。"""
+    """Normalize an amount notation (120,000円 / 12万円 / 金壱千万円, etc.) to an integer in yen."""
     raw = _zen_to_han(raw)
 
-    # パターンA: 算用数字 + 「万」(+「円」) 例: 35万円, 210万円
+    # Pattern A: arabic digits + 「万」(+「円」) e.g. 35万円, 210万円
     m = re.search(r"([0-9,]+)\s*万\s*円?", raw)
     if m:
         return int(m.group(1).replace(",", "")) * 10_000
 
-    # パターンB: 算用数字 + 「円」 例: 120,000円, 10,000,000円
+    # Pattern B: arabic digits + 「円」 e.g. 120,000円, 10,000,000円
     m = re.search(r"([0-9,]+)\s*円", raw)
     if m:
         return int(m.group(1).replace(",", ""))
 
-    # パターンC: 漢数字主体 例: 金弐拾肆萬円, 金壱千万円
+    # Pattern C: mostly kanji numerals e.g. 金弐拾肆萬円, 金壱千万円
     val = parse_kanji_number(raw)
     return val
 
 
-# 「ラベル ... 金額表記」を拾うための行ベースの手がかり
-# より具体的なラベルを先に並べる（同一行に複数ラベルが出る場合の優先順位）
+# Line-based hints for picking up "<label> ... <amount>"
+# List more specific labels first (priority when multiple labels appear on one line)
 _AMOUNT_LABELS = ["月額家賃", "敷金", "礼金", "共益費", "保証金", "保険金額", "保険料", "賃料", "家賃"]
 
 
@@ -204,7 +204,7 @@ def _extract_amounts_fallback(text: str) -> list[MonetaryItem]:
     items: list[MonetaryItem] = []
     seen: set[tuple[str, int]] = set()
 
-    # 金額らしき表記を文中から広く拾う
+    # Broadly pick up amount-like notations from the text
     amount_pattern = re.compile(
         r"(?:金)?\s*(?:[0-9０-９,，]+\s*万?\s*円|[〇零一壱二弐三参四肆五伍六七八九十拾百千万萬億]+\s*円|[〇零一壱二弐三参四肆五伍六七八九十拾百千万萬億]+萬円)"
     )
@@ -215,7 +215,7 @@ def _extract_amounts_fallback(text: str) -> list[MonetaryItem]:
             amount = normalize_amount(raw)
             if amount is None or amount <= 0:
                 continue
-            # 行内のラベルを推定（最初に現れるラベル語）
+            # Infer the label on the line (first matching label term)
             label = next((lab for lab in _AMOUNT_LABELS if lab in line), "金額")
             key = (label, amount)
             if key in seen:
@@ -228,19 +228,19 @@ def _extract_amounts_fallback(text: str) -> list[MonetaryItem]:
 def _extract_date_fallback(text: str) -> Optional[date]:
     text = _zen_to_han(text)
 
-    # 和暦: 令和N年M月D日
+    # Japanese era: 令和N年M月D日
     m = re.search(r"令和\s*([0-9元]+)\s*年\s*([0-9]+)\s*月\s*([0-9]+)\s*日", text)
     if m:
         y = 1 if m.group(1) == "元" else int(m.group(1))
         return date(2018 + y, int(m.group(2)), int(m.group(3)))
 
-    # 和暦: 平成N年M月D日
+    # Japanese era: 平成N年M月D日
     m = re.search(r"平成\s*([0-9元]+)\s*年\s*([0-9]+)\s*月\s*([0-9]+)\s*日", text)
     if m:
         y = 1 if m.group(1) == "元" else int(m.group(1))
         return date(1988 + y, int(m.group(2)), int(m.group(3)))
 
-    # 西暦: YYYY年M月D日
+    # Gregorian: YYYY年M月D日
     m = re.search(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", text)
     if m:
         return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
@@ -265,10 +265,10 @@ def _extract_name_fallback(text: str, patterns: list[str]) -> Optional[str]:
 
 
 def _extract_clauses_fallback(text: str) -> list[str]:
-    """特約・免責に関連する条項を簡易抽出する。
+    """Roughly extract clauses related to special terms / disclaimers.
 
-    構造化された短い行はそのまま、改行の無い長い一段落は文（。区切り）に分割して
-    キーワードを含む文だけを拾う。
+    Keep short structured lines as-is; split a long single paragraph (no line breaks)
+    into sentences (by 。) and pick only the sentences that contain a keyword.
     """
     keywords = ["クリーニング", "ペット", "転貸", "又貸し", "原状回復", "中途解約",
                 "免責", "告知義務", "解約", "責任開始", "解除"]
@@ -276,13 +276,13 @@ def _extract_clauses_fallback(text: str) -> list[str]:
 
     for line in text.splitlines():
         line = line.strip()
-        if not line or "≪" in line or "要旨" in line:  # 見出し行は除外
+        if not line or "≪" in line or "要旨" in line:  # exclude heading lines
             continue
-        # 長い一段落は文単位に分割（覚書のようなベタ書き対策）
+        # Split a long paragraph into sentences (handles memo-style run-on text)
         segments = [s for s in line.split("。") if s] if len(line) > 80 else [line]
         long_para = len(line) > 80
         for seg in segments:
-            # 先頭の番号・記号（（１）/ ・ / 【】 等）を除去
+            # Strip leading numbering/symbols（（１）/ ・ / 【】 etc.）
             s = re.sub(r"^[\s　・（）()【】0-9０-９]+", "", seg).strip("　 ")
             if not s or len(s) <= 6:
                 continue
@@ -295,18 +295,18 @@ def _extract_clauses_fallback(text: str) -> list[str]:
 
 
 def extract_with_fallback(text: str) -> ContractData:
-    """API無しでも動く、正規表現ベースの決定論的抽出。"""
+    """Deterministic regex-based extraction that works without an API."""
     doc_type = _detect_doc_type(text)
 
     contractor = _extract_name_fallback(text, [
-        r"」という。）\s*は\s*[　 ]*([^\n。、（]+?)\s*とする",   # 「契約者」という。）は 山田 太郎 とする
-        r"【ご契約者さま】\s*[　 ]*([^\n　]+?)\s*様",            # 【ご契約者さま】保戸田 花子 様
-        r"借主は\s*([^\n（。]+?)\s*(?:（|であり|とする)",        # 借主は 田中商事株式会社（…
+        r"」という。）\s*は\s*[　 ]*([^\n。、（]+?)\s*とする",   # contractor: 「契約者」という。）は 山田 太郎 とする
+        r"【ご契約者さま】\s*[　 ]*([^\n　]+?)\s*様",            # contractor: 【ご契約者さま】保戸田 花子 様
+        r"借主は\s*([^\n（。]+?)\s*(?:（|であり|とする)",        # contractor: 借主は 田中商事株式会社（…
     ])
     counterparty = _extract_name_fallback(text, [
-        r"貸主(?:は)?\s*[　 ]*([^\n。、（]+?)\s*とする",          # 貸主は 株式会社さくら不動産管理 とする
-        r"【保険会社】\s*[　 ]*([^\n　]+)",                       # 【保険会社】あさひ生命保険相互会社
-        r"貸主は\s*([^\n。]+?)\s*である",                        # 貸主は 野村ビルディング合同会社 である
+        r"貸主(?:は)?\s*[　 ]*([^\n。、（]+?)\s*とする",          # counterparty: 貸主は 株式会社さくら不動産管理 とする
+        r"【保険会社】\s*[　 ]*([^\n　]+)",                       # counterparty: 【保険会社】あさひ生命保険相互会社
+        r"貸主は\s*([^\n。]+?)\s*である",                        # counterparty: 貸主は 野村ビルディング合同会社 である
     ])
 
     return ContractData(
@@ -321,17 +321,17 @@ def extract_with_fallback(text: str) -> ContractData:
 
 
 # ===========================================================================
-# 4. ディスパッチャ
+# 4. Dispatcher
 # ===========================================================================
 def extract_contract(text: str) -> tuple[ContractData, str]:
     """
-    利用可能な抽出方式を自動選択して構造化データを返す。
+    Automatically select an available extraction method and return structured data.
 
-    戻り値: (ContractData, 使用した方式名)
+    Returns: (ContractData, name of the method used)
     """
     if os.environ.get("ANTHROPIC_API_KEY"):
         try:
             return extract_with_llm(text), "LLM (Anthropic Structured Outputs)"
-        except Exception as exc:  # noqa: BLE001 - フォールバックに切替える
+        except Exception as exc:  # noqa: BLE001 - fall back instead
             print(f"  [warn] LLM抽出に失敗したためフォールバックします: {exc}")
     return extract_with_fallback(text), "規則ベース (正規表現フォールバック)"

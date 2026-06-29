@@ -1,17 +1,18 @@
 """
-商用環境向けに堅牢化した非同期・構造化抽出パイプライン。
+Production-hardened async, structured extraction pipeline.
 
-本モジュールが提供する強化点:
-  1. 構造化の100%保証 …… Pydantic v2 のカスタム @field_validator で日付ISO/数値の妥当性を検査し、
-     不正ならLLMにエラー理由を返して再生成させる「自己修正ループ」（最大2回）を実装。
-  2. コスト/遅延の削減 …… プロンプトを最小限に圧縮し、Few-ShotはコンパクトなJSON1例のみ。
-     asyncio による非同期バッチ処理 + tenacity の指数バックオフ付きリトライでレートリミットを回避。
-  3. 確信度の数値化 …… 各抽出項目に quote（根拠原文）と confidence(0.0-1.0) を付与。
-     0.7未満の項目は [WARNING] ログを出し、人手チェック対象としてフラグ化。
+Enhancements provided by this module:
+  1. 100% structuring guarantee ...... Pydantic v2 custom @field_validator checks ISO-date / numeric
+     validity; on failure it returns the error reason to the LLM and re-generates via a
+     "self-correction loop" (up to 2 retries).
+  2. Cost / latency reduction ...... Compresses the prompt to a minimum and uses only a single compact
+     JSON few-shot example. asyncio async batching + tenacity exponential-backoff retries dodge rate limits.
+  3. Confidence quantification ...... Each extracted field carries a quote (supporting source text) and a
+     confidence (0.0-1.0). Fields below 0.7 emit a [WARNING] log and are flagged for human review.
 
-APIキー (ANTHROPIC_API_KEY) があれば実際のLLM (AsyncAnthropic) を、無ければ
-決定論的なモックLLMを用いる。モックは同じ検証・自己修正・確信度・トークン計上の経路を通るため、
-キーが無くてもパイプライン全体をエンドツーエンドで実証できる。
+If an API key (ANTHROPIC_API_KEY) is present it uses a real LLM (AsyncAnthropic); otherwise it uses a
+deterministic mock LLM. The mock goes through the same validation / self-correction / confidence /
+token-accounting path, so the whole pipeline can be demonstrated end to end even without a key.
 """
 
 from __future__ import annotations
@@ -36,30 +37,30 @@ from tenacity import (
     wait_random_exponential,
 )
 
-# 既存の規則ベース抽出（v1）をモックLLMの“素材”として再利用する
+# Reuse the existing rule-based extraction (v1) as the mock LLM's "raw material"
 from extractor import extract_with_fallback
 
 logger = logging.getLogger("robust_extractor")
 
 MODEL_ID = "claude-opus-4-8"
-MAX_SELF_CORRECTIONS = 2        # 自己修正の最大回数（=リトライ上限）。総試行は 1 + 2 = 3
-MAX_CONCURRENCY = 5             # 同時並列リクエスト数（レートリミット保護の一次防御）
-CONFIDENCE_THRESHOLD = 0.7      # これ未満の項目は人手チェック対象
+MAX_SELF_CORRECTIONS = 2        # max self-corrections (= retry limit). Total attempts = 1 + 2 = 3
+MAX_CONCURRENCY = 5             # max concurrent requests (first line of defense against rate limits)
+CONFIDENCE_THRESHOLD = 0.7      # fields below this are flagged for human review
 
 
 # ===========================================================================
-# 例外
+# Exceptions
 # ===========================================================================
 class TransientAPIError(Exception):
-    """一時的なAPI障害（429等）を模した再試行対象の例外。"""
+    """A retryable exception simulating a transient API failure (e.g. 429)."""
 
 
 class SelfCorrectionExhausted(Exception):
-    """自己修正の上限まで試しても妥当なJSONが得られなかった。"""
+    """Could not obtain valid JSON even after exhausting the self-correction limit."""
 
 
 # ===========================================================================
-# 1. Pydantic スキーマ（確信度つき・カスタムバリデータ）
+# 1. Pydantic schema (with confidence + custom validators)
 # ===========================================================================
 T = TypeVar("T")
 
@@ -71,7 +72,7 @@ class DocumentType(str, Enum):
 
 
 class Tracked(BaseModel, Generic[T]):
-    """1項目の抽出結果。値・根拠引用・確信度をまとめて追跡する。"""
+    """Extraction result for one field. Tracks the value, supporting quote, and confidence together."""
 
     value: Optional[T] = Field(None, description="抽出・正規化した値")
     quote: str = Field("", description="根拠となった原文の最小引用")
@@ -87,7 +88,7 @@ class MonetaryItem(BaseModel):
     @field_validator("amount_yen", mode="before")
     @classmethod
     def _amount_must_be_int_yen(cls, v):
-        # LLMが "120,000円" や "12万円" のような文字列を返したら拒否し、自己修正を促す
+        # If the LLM returns a string like "120,000円" or "12万円", reject it to trigger self-correction
         if isinstance(v, str):
             raise ValueError(
                 f"amount_yen は円単位の整数で返してください。'{v}' は未正規化の文字列です"
@@ -101,7 +102,7 @@ class MonetaryItem(BaseModel):
 
 
 class ContractData(BaseModel):
-    """確信度つきの最終スキーマ。"""
+    """Final schema with confidence."""
 
     document_type: DocumentType
     contractor_name: Tracked[str]
@@ -114,8 +115,8 @@ class ContractData(BaseModel):
     @field_validator("contract_date")
     @classmethod
     def _date_must_be_iso_and_plausible(cls, v: "Tracked[date]") -> "Tracked[date]":
-        # Tracked[date] の value は pydantic が ISO文字列→date に変換済み。
-        # ここでは妥当な範囲かを追加検査する（和暦未変換などの取りこぼし対策）。
+        # pydantic already converted Tracked[date].value from an ISO string to a date.
+        # Here we additionally check it falls in a plausible range (catches un-converted Japanese eras, etc.).
         if v.value is not None and not (1900 <= v.value.year <= 2100):
             raise ValueError(
                 f"contract_date.value={v.value} が妥当な範囲(1900-2100)外です。"
@@ -124,7 +125,7 @@ class ContractData(BaseModel):
         return v
 
     def low_confidence_fields(self, threshold: float = CONFIDENCE_THRESHOLD) -> list[tuple[str, float]]:
-        """確信度がしきい値未満の項目を (項目名, 確信度) で列挙する。"""
+        """List fields whose confidence is below the threshold as (field_name, confidence)."""
         flagged: list[tuple[str, float]] = []
         for name in ("contractor_name", "counterparty_name", "contract_date"):
             tracked: Tracked = getattr(self, name)
@@ -137,7 +138,7 @@ class ContractData(BaseModel):
 
 
 # ===========================================================================
-# 2. 圧縮プロンプト + コンパクトFew-Shot（トークン効率重視）
+# 2. Compressed prompt + compact few-shot (optimized for token efficiency)
 # ===========================================================================
 SYSTEM_PROMPT = (
     "保険/不動産の契約書からJSONのみ抽出。各値に value/quote/confidence(0-1) を付与。"
@@ -148,7 +149,7 @@ SYSTEM_PROMPT = (
     "説明やコードフェンス禁止、JSONのみ返す。"
 )
 
-# Few-Shotは最小JSON1例のみ（user→assistant 1往復）でトークンを節約
+# The few-shot is a single minimal JSON example (one user→assistant round trip) to save tokens
 _FEWSHOT_INPUT = "<doc>\n借主は田中とする。賃料は月額5万円。契約は令和5年4月1日。\n</doc>"
 _FEWSHOT_OUTPUT = json.dumps(
     {
@@ -163,7 +164,7 @@ _FEWSHOT_OUTPUT = json.dumps(
         "summary": "賃貸借契約",
     },
     ensure_ascii=False,
-    separators=(",", ":"),  # 余白を削ってトークン削減
+    separators=(",", ":"),  # trim whitespace to reduce tokens
 )
 
 FEWSHOT_MESSAGES = [
@@ -175,7 +176,7 @@ CORRECTION_MARKER = "【自己修正要求】"
 
 
 def _estimate_tokens(text: str) -> int:
-    """日本語混在テキストの概算トークン数（≒ 2.3文字/トークン）。"""
+    """Rough token count for mixed-Japanese text (≈ 2.3 chars/token)."""
     return max(1, math.ceil(len(text) / 2.3))
 
 
@@ -194,15 +195,15 @@ class Usage:
 
 
 # ===========================================================================
-# 3. LLMクライアント（実API / モック）
+# 3. LLM clients (real API / mock)
 # ===========================================================================
 class RealAsyncLLM:
-    """AsyncAnthropic を用いた実LLMクライアント。"""
+    """Real LLM client using AsyncAnthropic."""
 
     def __init__(self) -> None:
         import anthropic
 
-        self._client = anthropic.AsyncAnthropic()  # ANTHROPIC_API_KEY を環境から読込
+        self._client = anthropic.AsyncAnthropic()  # reads ANTHROPIC_API_KEY from the environment
 
     async def complete(self, messages: list[dict]) -> tuple[str, Usage]:
         resp = await self._client.messages.create(
@@ -218,20 +219,21 @@ class RealAsyncLLM:
 
 class MockAsyncLLM:
     """
-    決定論的なモックLLM。実LLMと同じ (messages -> (json文字列, usage)) 契約を満たす。
+    Deterministic mock LLM. Satisfies the same (messages -> (json string, usage)) contract as the real LLM.
 
-    実演のため意図的に:
-      - 最初の1回だけ一時的エラー(TransientAPIError)を投げ、tenacityのバックオフを発火させる
-      - "覚書" を含む文書では初回に日付を未正規化(令和表記)で返し、自己修正ループを発火させる
+    For demonstration purposes it deliberately:
+      - raises a transient error (TransientAPIError) on the very first call to trigger tenacity backoff
+      - for documents containing "覚書", returns an un-normalized date (Japanese-era notation) on the
+        first attempt to trigger the self-correction loop
     """
 
     def __init__(self) -> None:
         self._transient_fired = False
 
     async def complete(self, messages: list[dict]) -> tuple[str, Usage]:
-        await asyncio.sleep(0.05)  # ネットワーク遅延の擬似
+        await asyncio.sleep(0.05)  # simulate network latency
 
-        # レートリミット(429)を一度だけ模擬 → tenacity がバックオフ後に再試行
+        # Simulate a rate limit (429) exactly once → tenacity retries after backoff
         if not self._transient_fired:
             self._transient_fired = True
             raise TransientAPIError("Simulated HTTP 429 rate_limit_error")
@@ -244,15 +246,15 @@ class MockAsyncLLM:
 
         json_str = self._build(doc_text, is_correction)
 
-        # トークン使用量を概算（system + 全メッセージを入力、生成JSONを出力とみなす）
+        # Estimate token usage (treat system + all messages as input, the generated JSON as output)
         in_text = SYSTEM_PROMPT + "".join(str(m["content"]) for m in messages)
         usage = Usage(_estimate_tokens(in_text), _estimate_tokens(json_str))
         return json_str, usage
 
     def _build(self, text: str, is_correction: bool) -> str:
-        base = extract_with_fallback(text)  # v1の規則ベース結果を素材に使う
+        base = extract_with_fallback(text)  # use the v1 rule-based result as raw material
 
-        # 漢数字を含む金額は確信度を下げる（OCR/解釈の不確かさを表現）
+        # Lower the confidence for amounts containing kanji numerals (expresses OCR/parse uncertainty)
         def amount_conf(orig: str) -> float:
             kanji = "〇零一壱二弐三参四肆五伍六七八九十拾百千万萬億"
             return 0.66 if any(c in orig for c in kanji) else 0.94
@@ -267,13 +269,14 @@ class MockAsyncLLM:
             for m in base.monetary_amounts
         ]
 
-        # 保険会社名は様式が多様で誤りやすい想定 → 確信度を低めにして[WARNING]を実証
+        # Insurer names vary in format and are error-prone → lower confidence to demonstrate [WARNING]
         counter_conf = 0.64 if base.document_type == DocumentType.INSURANCE else 0.95
 
-        # 「覚書」文書では初回だけ日付を未正規化(令和表記)で返し、検証失敗→自己修正を誘発
+        # For "覚書" documents, return an un-normalized date (era notation) on the first attempt only,
+        # to induce validation failure → self-correction
         inject_bad_date = (not is_correction) and ("覚書" in text)
         if inject_bad_date:
-            date_value: Optional[str] = "令和7年1月10日"  # ISOでない → 検証で弾かれる
+            date_value: Optional[str] = "令和7年1月10日"  # not ISO → rejected by validation
             date_conf = 0.5
         else:
             date_value = base.contract_date.isoformat() if base.contract_date else None
@@ -304,7 +307,7 @@ class MockAsyncLLM:
 
 
 def _strip_json(text: str) -> str:
-    """```json ...``` のコードフェンスを除去してJSON本体を取り出す。"""
+    """Strip a ```json ...``` code fence and return the JSON body."""
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
@@ -313,7 +316,7 @@ def _strip_json(text: str) -> str:
 
 
 def _extract_doc(messages: list[dict]) -> str:
-    """messages 中の <doc>...</doc> から元テキストを取り出す。"""
+    """Extract the source text from <doc>...</doc> within messages."""
     for m in reversed(messages):
         content = m.get("content", "")
         if isinstance(content, str):
@@ -337,7 +340,7 @@ def _make_client():
 
 
 # ===========================================================================
-# 4. リトライ（指数バックオフ） + 自己修正ループ
+# 4. Retry (exponential backoff) + self-correction loop
 # ===========================================================================
 def _retryable_exceptions():
     excs: tuple = (TransientAPIError,)
@@ -363,7 +366,7 @@ def _retryable_exceptions():
     reraise=True,
 )
 async def _invoke_with_backoff(client, messages: list[dict]) -> tuple[str, Usage]:
-    """レートリミット等に対し指数バックオフで再試行しつつ1回のLLM呼び出しを行う。"""
+    """Make one LLM call, retrying with exponential backoff against rate limits, etc."""
     return await client.complete(messages)
 
 
@@ -391,7 +394,7 @@ class ExtractionResult:
 
 
 async def extract_one(client, name: str, text: str) -> ExtractionResult:
-    """1ドキュメントを抽出。検証失敗時はエラー理由をLLMに返して最大2回まで自己修正する。"""
+    """Extract one document. On validation failure, feed the reason back to the LLM and self-correct up to 2 times."""
     messages = list(FEWSHOT_MESSAGES) + [{"role": "user", "content": f"<doc>\n{text}\n</doc>"}]
     usage = Usage()
     last_err: Optional[ValidationError] = None
@@ -412,9 +415,9 @@ async def extract_one(client, name: str, text: str) -> ExtractionResult:
                 messages.append({"role": "assistant", "content": raw})
                 messages.append({"role": "user", "content": _format_validation_feedback(exc, raw)})
                 continue
-            break  # 上限到達
+            break  # limit reached
 
-        # 検証成功 → 確信度フラグ
+        # Validation succeeded → confidence flags
         flagged = data.low_confidence_fields()
         for field_name, conf in flagged:
             logger.warning(
@@ -436,10 +439,10 @@ async def extract_one(client, name: str, text: str) -> ExtractionResult:
 
 async def extract_batch(docs: list[tuple[str, str]]) -> tuple[list[ExtractionResult], str]:
     """
-    複数ドキュメントを非同期バッチで抽出する。
+    Extract multiple documents as an async batch.
 
     docs: [(name, text), ...]
-    戻り値: (結果リスト, 使用クライアント名)
+    Returns: (list of results, name of the client used)
     """
     client, client_name = _make_client()
     sem = asyncio.Semaphore(MAX_CONCURRENCY)

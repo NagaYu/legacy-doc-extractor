@@ -1,11 +1,11 @@
 """
-堅牢化版の非同期バッチ実行スクリプト（v2）。
+Hardened async batch runner script (v2).
 
-  1. data/ の sample_contract_*.txt を読み込み
-  2. asyncio で並列に構造化抽出（自己修正ループ + 指数バックオフ付きリトライ）
-  3. 確信度<0.7 の項目に [WARNING] を出し人手チェック対象としてフラグ
-  4. output/extracted_data_v2.json に保存
-  5. 処理時間 / トークン消費量 / パース成功率 のサマリーを表示
+  1. Load sample_contract_*.txt from data/
+  2. Extract structured data concurrently with asyncio (self-correction loop + exponential-backoff retries)
+  3. Emit [WARNING] for fields with confidence < 0.7 and flag them for human review
+  4. Save to output/extracted_data_v2.json
+  5. Print a summary of processing time / token consumption / parse success rate
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ async def main() -> int:
     results, client_name = await extract_batch(docs)
     elapsed = time.perf_counter() - t0
 
-    # 結果の整形・保存
+    # Format and save the results
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     payload = []
     total_usage = Usage()
@@ -90,7 +90,7 @@ async def main() -> int:
     out_path = OUTPUT_DIR / "extracted_data_v2.json"
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 個別結果の要点表示
+    # Print per-document highlights
     for r in results:
         print()
         print(f"📄 {r.name}")
@@ -109,7 +109,7 @@ async def main() -> int:
         else:
             print(f"   状態        : ❌ 失敗 — {r.error}")
 
-    # サマリー
+    # Summary
     rate = (success / len(results) * 100) if results else 0.0
     print()
     print(SEP)
