@@ -1,79 +1,82 @@
-# レガシー業界（保険・不動産）向け 非構造化データ抽出ツール（プロトタイプ）
+# Unstructured Data Extraction Tool for Legacy Industries (Insurance / Real Estate) — Prototype
 
-表記揺れや冗長な文章の多い「契約書・約款テキスト」から、必要な項目を抽出し、
-Pydanticスキーマに準拠した構造化JSONへ変換する自動化ツールのプロトタイプです。
+A prototype automation tool that extracts the fields you need from messy "contract / policy text"
+— full of inconsistent notation and verbose boilerplate — and converts them into structured JSON
+that conforms to a Pydantic schema.
 
-> ⚠️ **本リポジトリはプロトタイプ（技術実証）です。本番利用ではありません。**
-> - 同梱の `data/sample_contract_*.txt` は**架空のサンプル**です。実在の契約書・個人情報を含みません。
-> - **実在の契約書や個人情報（PII）を投入しないでください。** LLM抽出を使う場合、テキストは
->   外部APIへ送信されます。実データの取扱いは利用者の責任で、各社の規程・関連法令に従ってください。
-> - **抽出結果は必ず人手で確認してください。** 本ツールは確信度スコアと
->   `needs_human_review` フラグを出力しますが、正確性は保証しません。
-> - `ANTHROPIC_API_KEY` 未設定時はモック/正規表現フォールバックで動作します。この経路は
->   **実演用**であり本番品質ではありません。実際の抽出精度はキーを設定し実LLMで検証してください。
+> ⚠️ **This repository is a prototype (proof of concept), not for production use.**
+> - The bundled `data/sample_contract_*.txt` files are **fictional samples**. They contain no real contracts or personal data.
+> - **Do not feed in real contracts or personally identifiable information (PII).** When using LLM
+>   extraction, the text is sent to an external API. Handling of real data is the user's responsibility
+>   and must comply with your organization's policies and applicable laws.
+> - **Always review the extracted results by hand.** The tool outputs confidence scores and a
+>   `needs_human_review` flag, but it does not guarantee accuracy.
+> - When `ANTHROPIC_API_KEY` is unset, it runs via a mock / regex fallback. That path is **for
+>   demonstration only** and is not production quality. Verify the actual extraction accuracy with a real LLM by setting the key.
 
-## 特徴
-- **Pydanticによる厳格なスキーマ定義／バリデーション**（`src/extractor.py` の `ContractData`）
-- **LLM構造化抽出**（Anthropic Structured Outputs / モデル `claude-opus-4-8`）
-- **レガシー文書向けの正規化**
-  - 金額：`120,000円` / `12万円` / `金弐拾肆萬円`（漢数字）→ 円単位の整数に統一
-  - 日付：和暦 `令和6年4月1日` ⇄ 西暦 `2024年` を吸収し ISO形式 `2024-04-01` に統一
-- **APIキー不要のフォールバック**：環境変数 `ANTHROPIC_API_KEY` が無い場合は、
-  正規表現ベースの決定論的抽出に自動で切り替わり、デモがエンドツーエンドで完走します。
+## Features
+- **Strict schema definition / validation with Pydantic** (`ContractData` in `src/extractor.py`)
+- **LLM structured extraction** (Anthropic Structured Outputs / model `claude-opus-4-8`)
+- **Normalization for legacy documents**
+  - Amounts: `120,000円` / `12万円` / `金弐拾肆萬円` (kanji numerals) → unified to an integer in yen
+  - Dates: absorbs Japanese-era `令和6年4月1日` ⇄ Gregorian `2024年` and unifies to ISO format `2024-04-01`
+- **API-key-free fallback**: when the `ANTHROPIC_API_KEY` environment variable is absent, it
+  automatically switches to deterministic regex-based extraction so the demo runs end to end.
 
-## ディレクトリ構成
+## Directory layout
 ```
 .
 ├── requirements.txt
 ├── data/
-│   ├── generate_data.py        # 架空のレガシー契約書テキストを生成
-│   └── sample_contract_*.txt   # 生成されるテストデータ（不動産2 + 保険1）
+│   ├── generate_data.py        # Generates fictional legacy contract texts
+│   └── sample_contract_*.txt   # Generated test data (2 real estate + 1 insurance)
 ├── src/
-│   ├── extractor.py            # Pydanticスキーマ + 抽出パイプライン
-│   └── main.py                 # 読込→抽出→検証→保存→比較表示
+│   ├── extractor.py            # Pydantic schema + extraction pipeline
+│   └── main.py                 # load → extract → validate → save → side-by-side display
 └── output/
-    └── extracted_data.json     # 抽出結果
+    └── extracted_data.json     # Extraction results
 ```
 
-## セットアップ & 実行
+## Setup & run
 ```bash
 python3 -m venv .venv
 ./.venv/bin/python -m pip install -r requirements.txt
 
-# 1) テストデータ生成
+# 1) Generate test data
 ./.venv/bin/python data/generate_data.py
 
-# 2) （任意）高精度なLLM抽出を使う場合のみ APIキーを設定
+# 2) (Optional) Set an API key only if you want high-accuracy LLM extraction
 export ANTHROPIC_API_KEY="sk-ant-..."
 
-# 3) 抽出デモを実行（元テキストと構造化JSONを並べて表示）
+# 3) Run the extraction demo (shows the source text alongside the structured JSON)
 ./.venv/bin/python src/main.py
 ```
 
-`ANTHROPIC_API_KEY` を設定していれば LLM抽出、未設定なら規則ベース抽出が使われます
-（コンソールに「抽出方式」が表示されます）。結果は `output/extracted_data.json` に保存されます。
+If `ANTHROPIC_API_KEY` is set, LLM extraction is used; if not, rule-based extraction is used
+(the console prints which "extraction method" was used). Results are saved to `output/extracted_data.json`.
 
-## v2: 商用環境向け堅牢化版（非同期バッチ）
+## v2: Production-hardened version (async batch)
 
-`src/robust_extractor.py` + `src/run_async.py` は、APIコスト制限・エラーレートに耐える強化版です。
+`src/robust_extractor.py` + `src/run_async.py` is a hardened version built to withstand API cost
+limits and error rates.
 
 ```bash
-./.venv/bin/python src/run_async.py   # 非同期バッチ抽出 + サマリー表示
+./.venv/bin/python src/run_async.py   # async batch extraction + summary
 ```
 
-強化点:
-- **構造化の100%保証** — Pydantic v2 の `@field_validator`（日付ISO・金額の整数検証）。
-  検証失敗時はエラー理由をLLMに返して**自己修正（最大2回）**。
-- **コスト/遅延の削減** — 圧縮プロンプト + 最小JSONのFew-Shot1例、`asyncio` 非同期バッチ、
-  `tenacity` の指数バックオフ付きリトライ（レートリミット429を自動回復）。
-- **確信度の数値化** — 各項目に `quote`（根拠原文）と `confidence`(0.0-1.0)。
-  0.7未満は `[WARNING]` ログを出力し人手チェック対象としてフラグ化。
-- 実行末尾に **処理時間 / トークン消費量 / パース成功率** のサマリーを表示。
-- 結果は `output/extracted_data_v2.json` に保存。
+Enhancements:
+- **100% structuring guarantee** — Pydantic v2 `@field_validator` (ISO date / integer-amount checks).
+  On validation failure, the error reason is fed back to the LLM for **self-correction (up to 2 retries)**.
+- **Cost / latency reduction** — compressed prompt + a single minimal-JSON few-shot example,
+  `asyncio` async batching, and `tenacity` exponential-backoff retries (auto-recovers from rate-limit 429s).
+- **Confidence quantification** — each field carries a `quote` (supporting source text) and a
+  `confidence` (0.0–1.0). Anything below 0.7 emits a `[WARNING]` log and is flagged for human review.
+- Prints a summary of **processing time / token consumption / parse success rate** at the end.
+- Results are saved to `output/extracted_data_v2.json`.
 
-APIキーが無い場合は決定論的なモックLLMで同じ検証・自己修正・確信度・トークン計上の経路を実行します
-（自己修正ループとバックオフ再試行の発火を実演できます）。
+When no API key is present, a deterministic mock LLM runs the same validation / self-correction /
+confidence / token-accounting path (so you can demonstrate the self-correction loop and backoff retries firing).
 
-> ℹ️ **モック実行時のサマリー値（処理時間・トークン消費量・確信度など）は実演用の概算/固定値です。**
-> 実際のコスト・レイテンシ・抽出精度は `ANTHROPIC_API_KEY` を設定して実LLMで計測してください
-> （実LLM経路ではトークン数は API レスポンスの `usage` から取得します）。
+> ℹ️ **Under the mock run, the summary values (processing time, token consumption, confidence, etc.) are approximate/fixed demo values.**
+> Measure the real cost, latency, and extraction accuracy with a real LLM by setting `ANTHROPIC_API_KEY`
+> (on the real-LLM path, token counts come from the API response's `usage`).
